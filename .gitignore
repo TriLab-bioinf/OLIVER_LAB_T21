@@ -1,0 +1,10 @@
+.DS_Store
+DE/
+Plots/
+.Rproj.user/
+05bigwig/
+05counts/
+06fastqc_raw/
+06fastqc_trim/
+07multiqc/
+
