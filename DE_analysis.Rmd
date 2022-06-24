@@ -1,7 +1,9 @@
 ---
 title: "R Notebook"
-output: html_notebook
-author: Hernan Lorenzi
+author: "Hernan Lorenzi"
+output:
+  html_document:
+    df_print: paged
 ---
 
 # Load libraries
@@ -10,6 +12,9 @@ library(tidyverse)
 library(DESeq2)
 library(cowplot)
 library(ggpubr)
+library("RColorBrewer")
+library(pheatmap)
+library(ggsci)
 ```
 
 # Load data
@@ -65,57 +70,67 @@ p <- ggbarplot(data = metadata,
 
 ggsave2("Plots/barplot_read_counts_per_sample.pdf", plot = p)
 
-
-
 # Normalize counts
-vsd.one <- vst(dds.one, blind=FALSE)
-rlog.one <- rlog(dds.one, blind=FALSE)
+vsd.gse80548 <- vst(dds.gse80548, blind=FALSE)
 
-# Keep genes with at least 10 reads total across samples
-keep <- rowSums(counts(dds.one)) >= 20
-dds.one <- dds.one[keep,]
+# Keep genes with at least 20 reads total across samples
+keep <- rowSums(as.data.frame(vsd.gse80548@assays@data@listData)) >= 20
+vsd.gse80548 <- vsd.gse80548[keep,]
 
 # Calculate distances between samples
-sampleDists <- dist(t(assay(vsd.one)))
+sampleDists <- dist(t(assay(vsd.gse80548)))
 
 # Plot inter-sample distances
 old.par <- par(no.readonly=T)
 
 sampleDistMatrix <- as.matrix(sampleDists)
-rownames(sampleDistMatrix) <- paste(rlog.one$Sequencing_pool, rlog.one$Genotype, rlog.one$Inducer, sep="-")
+rownames(sampleDistMatrix) <- paste(vsd.gse80548$tissue)
 colnames(sampleDistMatrix) <- NULL
 colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
-pheatmap(sampleDistMatrix,
+p.hm <- pheatmap(sampleDistMatrix,
          clustering_distance_rows=sampleDists,
          clustering_distance_cols=sampleDists,
          col=colors)
 
+ggsave2(filename = "./Plots/heat_map.pdf", plot = p.hm)
+p.hm
+
 # PCA
-pcaData <- plotPCA(rlog.one, intgroup=c("Genotype", "Inducer"), returnData=TRUE)
+pcaData <- plotPCA(vsd.gse80548, intgroup=c("tissue"), returnData=TRUE)
 percentVar <- round(100 * attr(pcaData, "percentVar"))
 y.coords = c(min(pcaData$PC1, pcaData$PC2), max(pcaData$PC1, pcaData$PC2))
 x.coords = y.coords
-p1 <- ggplot(pcaData, aes(PC1, PC2, color=Genotype, shape=Inducer)) +
+p1 <- ggplot(pcaData, aes(PC1, PC2, color=tissue)) +
   geom_point(size=3) + scale_color_lancet() + 
   xlab(paste0("PC1: ",percentVar[1],"% variance")) +
   ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
   coord_fixed(ratio = (max(pcaData$PC1)-min(pcaData$PC1))/(max(pcaData$PC2)-min(pcaData$PC2))) 
 
-ggsave("Plots/pca_dataset_1_Induc_gt.pdf", plot = p1)
+ggsave("Plots/pca_by_tissue.pdf", plot = p1)
 p1
 
-pcaData <- plotPCA(rlog.one, intgroup=c("Read_counts", "Inducer"), returnData=TRUE)
-percentVar <- round(100 * attr(pcaData, "percentVar"))
-p2 <- ggplot(pcaData, aes(PC1, PC2, color=Read_counts, shape=Inducer)) +
-  geom_point(size=3) +
-  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
-  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
-  coord_fixed(ratio = (max(pcaData$PC1)-min(pcaData$PC1))/(max(pcaData$PC2)-min(pcaData$PC2))) + scale_color_gradient2(high = "blue", mid = "yellow")
-p2
-ggsave("Plots/pca_dataset_1_Induc_read_counts.pdf", plot = p2)
+```
+# Run DE analysis
+```{r}
+
+dir.create(path = "./DE", showWarnings = FALSE)
+
+# Calculate DE for WT samples
+dds.gse80548$Group_gt_ind <- relevel(dds.gse80548$tissue, "seminal_vesicles")
+dds.gse80548 <- DESeq(dds.gse80548)
+resultsNames(dds.gse80548)
+
+
+# Using lfcShrink instead of results to reduce high Log2FC bias of genes with low expression
+res_testes_vs_sem_ves <- lfcShrink(dds.gse80548, coef = "tissue_testes_vs_seminal_vesicles", type = "ashr", )
+
+# Replace NAs by 1s
+res_testes_vs_sem_ves$pvalue[is.na(res_testes_vs_sem_ves$pvalue)] <- 1
+res_testes_vs_sem_ves$padj[is.na(res_testes_vs_sem_ves$padj)] <- 1
+
+summary(res_testes_vs_sem_ves, alpha = 0.05)
+
+# Save DE results
+write.table(x = as.data.frame(res_testes_vs_sem_ves), file = "./DE/DE_testes_vs_sem_ves.txt", sep = "\t")
 
 ```
-
-
-
-
