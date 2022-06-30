@@ -1,0 +1,17 @@
+# Metadata
+reference:
+    abundant_rna_file: NA
+    ensembl_ver: r6.46
+    ensembl_gtf: data/00ref/dmel-all-r6.46.gtf
+    genome_build: hg38
+    genome_file: data/00ref/dmel-all-chromosome-r6.46.fasta
+    star_index: 00ref
+    genome_source: flybase
+remove_duplicated_reads: False
+star_db:
+    sjdbOverhang: 74
+samples:
+    SRR3419767:
+    SRR3419770:
+    SRR3419769:
+    SRR3419768:
