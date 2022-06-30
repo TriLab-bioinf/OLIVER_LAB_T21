@@ -7,4 +7,13 @@ Plots/
 06fastqc_raw/
 06fastqc_trim/
 07multiqc/
-
+.snakemake/
+GSE80548_series_matrix.txt
+README_cmd
+README_cmds
+acc_list.txt
+benchmarks/
+data/
+fetch_seqs_from_ncbi
+results/
+slurm_logs/
