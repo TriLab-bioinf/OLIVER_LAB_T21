@@ -17,3 +17,4 @@ data/
 fetch_seqs_from_ncbi
 results/
 slurm_logs/
+Snakefile

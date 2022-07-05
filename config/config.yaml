@@ -7,7 +7,7 @@ reference:
     genome_file: data/00ref/dmel-all-chromosome-r6.46.fasta
     star_index: 00ref
     genome_source: flybase
-remove_duplicated_reads: False
+remove_duplicated_reads: false
 star_db:
     sjdbOverhang: 74
 samples:
