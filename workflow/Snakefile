@@ -9,7 +9,7 @@
 import os
 import glob
 
-configfile: "config/config.yml"
+configfile: "config/config.yaml"
 samples = config["samples"].keys()
 genome = config["reference"]["genome_file"]
 annotation = config["reference"]["ensembl_gtf"]
@@ -20,20 +20,9 @@ if config["remove_duplicated_reads"]:
 else:
     rm_dup_flag = ""
 
-rm_duplicate  
-# Build directory structureremove_duplicates
-# paths = ["data/00ref", "data/00reads", "data/00adapters",
-#        "results/01trim", "results/02abundant","results/03map_reads",
-#        "results/04dedup","results/05correlation", "results/05bigwig",
-#        "results/05counts","results/06fastqc_raw",
-#        "results/06fastqc_trim","results/07multiqc"
-#        ]
-#for path in paths:
-#    os.makedirs(path, exist_ok = True)
-
 # Functions
 def get_fq1(wildcards):
-            return [ my_files for my_files in glob.glob(f"data/00reads/{wildcards.sample}*_R1*.fastq.gz")]
+            return [ my_files for my_files in glob.glob(f"data/00reads/{wildcards.sample}*.fastq.gz")]
 
 # Set what rules to run locally
 localrules: all #,
@@ -42,10 +31,9 @@ localrules: all #,
 rule all:
     # IMPORTANT: output file fo all rule has to match the name specified in the output file
     # and not include suffixes that the command use might add to it.
-    input:  #o10 = expand("results/01trim/{s}.{e}.fastq.gz", e=["1P","2P","1U","2U"], s=samples)
-            o0 = "results/05counts/read_counts.summary",
-            o1 = expand("results/06fastqc_raw/{s}.R1_fastqc.html", s=samples),
-            o3 = expand("results/06fastqc_trim/{s}.1P_fastqc.html", s=samples),
+    input:  o0 = "results/05counts/read_counts.summary",
+            o1 = expand("results/06fastqc_raw/{s}_fastqc.html", s=samples),
+            o3 = expand("results/06fastqc_trim/{s}.trimmed_fastqc.html", s=samples),
             o7 = "results/07multiqc/multiqc_done.flag",
             o9 = expand("results/05bigwig/{s}.bw", s=samples)
 
@@ -143,7 +131,7 @@ rule make_star_index:
         """
 
 rule map_reads:
-    input: fq1 = "results/02abundant/{sample}.fastq.1.gz",
+    input: fq1 = "results/01trim/{sample}.trimmed.fastq.gz",
            database = "data/00ref/SA"
     output: bam = "results/03map_reads/{sample}.Aligned.sortedByCoord.out.bam",
             log = "results/03map_reads/{sample}.Log.final.out"
@@ -262,8 +250,10 @@ rule fastqc:
     input: raw = "results/00merged_reads/{sample}.fastq.gz",
            trim = "results/01trim/{sample}.trimmed.fastq.gz"
     output: 
-            o1 = "results/06fastqc_raw/{sample}.fastqc.html",
-            o2 = "results/06fastqc_trim/{sample}.trimmed_fastqc.html"
+            o1 = "results/06fastqc_raw/{sample}_fastqc.html",
+            o2 = "results/06fastqc_trim/{sample}.trimmed_fastqc.html",
+            myzip1 = "results/06fastqc_raw/{sample}_fastqc.zip",
+            myzip2 = "results/06fastqc_trim/{sample}.trimmed_fastqc.zip"
     threads: 8
     resources:
         cpus_per_task = 8,
@@ -274,13 +264,11 @@ rule fastqc:
         "--quiet"
     shell:
         """
-        fastqc {params} -t {threads} -o results/06fastqc_raw {input.raw1}
+        fastqc {params} -t {threads} -o results/06fastqc_raw {input.raw}
         fastqc {params} -t {threads} -o results/06fastqc_trim {input.trim}
-        touch {output.o1}
-        touch {output.o2}
+        touch {output.myzip1}
+        touch {output.myzip2}
         """
-
-absolute_path = "/home/lorenziha/Downloads/snakemake-class/workflow/"
 
 rule multiqc:
     input: 
@@ -288,7 +276,7 @@ rule multiqc:
            i3 = expand("results/03map_reads/{sample}.Log.final.out", sample = samples),
            i4 = expand("results/04dedup/{sample}.sorted.dedup.metrics.txt", sample = samples),
            i5 = "results/05counts/read_counts.summary",
-           i7 = expand("results/06fastqc_raw/{sample}.fastqc.zip", sample = samples),
+           i7 = expand("results/06fastqc_raw/{sample}_fastqc.zip", sample = samples),
            i8 = expand("results/06fastqc_trim/{sample}.trimmed_fastqc.zip", sample = samples)
     output: "results/07multiqc/multiqc_done.flag"
     resources:
