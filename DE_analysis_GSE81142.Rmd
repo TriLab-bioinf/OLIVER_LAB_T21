@@ -1,0 +1,329 @@
+---
+title: "Differential expression analysis of individual Drosophila melanogaster (w1118) male and female flies fed with different concentrations of dimethyl sulfoxide (DMSO) over different time periods."
+author: "Analysis done by Hernan Lorenzi, TriLab Biounformatic Group"
+output:
+  pdf_document: default
+  html_document:
+  df_print: paged
+gemoetry: margin=1in
+fontsize: 8pt
+fontfamily: mathpazo
+---
+
+\center
+
+# *Summary:*
+To gain an understanding of the toxic effect of a commonly used solvent, flies were exposed to 0, 0.1, 0.2, or 0.4% v/v DMSO for 0, 2, 4, or 8 h. We performed compound exposure of 800 individual flies in 4 Whole Animal Feeding Flats (WAFFL), a novel 96 well system to house, feed, and harvest individual flies. This expression profiling was part of a set of the experiments performed to evaluate the suitability of the WAFFL for high throughput small compound screening in D. melanogaster. Treated flies and controls were used for poly A+ stranded mRNA library preparation and we performed high throughput RNA sequencing to determine the transcriptional changes due to DMSO treatment.
+
+```{r setup, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, tidy = TRUE)
+```
+
+# Load libraries
+```{r message=FALSE}
+library(tidyverse)
+library(DESeq2)
+library(cowplot)
+library(ggpubr)
+library("RColorBrewer")
+library(pheatmap)
+library(ggsci)
+library(AnnotationDbi)
+```
+
+# Load aux functions
+```{r}
+source(file = "01_aux_rnaseq_functions.R")
+```
+
+# Load data
+```{r}
+metadata <- as.data.frame(read_tsv(file = "data/metadata.txt", col_names = TRUE, comment = "#"))
+rownames(metadata) <- metadata$Sample_id
+
+
+read_counts <- as.data.frame(read_tsv(file = "data/read_counts.txt", col_names = TRUE, comment = "#"))
+rownames(read_counts) <- read_counts$Geneid # adding gene ids as row names
+
+
+# Rename sample names
+read_counts <- read_counts[,2:length(read_counts)]
+
+# Sort tables so metadata and read counts match order
+read_counts <- read_counts[,match(metadata$Sample_Acc, colnames(read_counts))]
+
+# Round read counts to the closest interger
+read_counts <- round(read_counts, digits = 0)
+
+# include total read counts in metadata
+metadata$read_counts <- colSums(read_counts)
+
+# Rename column names in read_counts based on metadata
+colnames(read_counts) <- rownames(metadata)
+
+write.table(x = metadata, file = "metadata.txt", sep = "\t") 
+```
+
+# DE analysis with DESeq2
+```{r}
+dir.create(path = "./Plots", showWarnings = FALSE)
+
+# Converting Time, DMSO and Replicate number to factors
+metadata$Time <- as.factor(metadata$Time)
+metadata$DMSO <- as.factor(metadata$DMSO)
+metadata$Replicate <- as.factor(metadata$Replicate)
+metadata$Sex <- as.factor(metadata$Sex)
+
+# Adding read_depth in design to control for read_depth
+dds.gse81142 <- DESeqDataSetFromMatrix(countData = read_counts, 
+                              colData = metadata,  
+                              design = ~ Sex + Time + DMSO)
+
+
+# Plot total reads per sample using barchar
+p <- ggbarplot(data = metadata, 
+          x = "Sample_id", 
+          y = "read_counts",
+          x.text.angle = 90,
+          fill = "DMSO", 
+          title = "Total read counts per sample", 
+          ylab = "Read counts",
+          sort.by.groups = TRUE,
+          palette = "jco",
+          sort.val = "asc")
+
+ggsave2("Plots/barplot_read_counts_per_sample.pdf", plot = p)
+
+# Normalize counts
+vsd.gse81142 <- vst(dds.gse81142, blind=FALSE)
+
+# Keep genes with at least 20 reads total across samples
+keep <- rowSums(as.data.frame(dds.gse81142@assays@data@listData)) >= 20
+vsd.gse81142 <- vsd.gse81142[keep,]
+
+# Calculate distances between samples
+sampleDists <- dist(t(assay(vsd.gse81142)))
+
+# Plot inter-sample distances
+old.par <- par(no.readonly=T)
+
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vsd.gse81142$tissue)
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+p.hm <- pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+
+ggsave2(filename = "./Plots/heat_map.pdf", plot = p.hm)
+p.hm
+
+# PCA
+pcaData <- plotPCA(vsd.gse81142, intgroup=c("DMSO","Time","Sex"), returnData=TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+y.coords = c(min(pcaData$PC1, pcaData$PC2), max(pcaData$PC1, pcaData$PC2))
+x.coords = y.coords
+p1 <- ggplot(pcaData, aes(PC1, PC2, color=DMSO, shape=Sex, size=Time)) +
+  geom_point() + scale_color_lancet() + 
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed(ratio = (max(pcaData$PC1)-min(pcaData$PC1))/(max(pcaData$PC2)-min(pcaData$PC2))) 
+
+ggsave("Plots/pca_by_tissue.pdf", plot = p1)
+p1
+
+```
+Samples cluster mainly by Sex.
+
+# Separate M and F
+```{r}
+dds.f <- dds.gse81142[, dds.gse81142$Sex == "F"]
+dds.f$Sex <- droplevels(dds.f$Sex)
+dds.f$DMSO <- relevel(dds.f$DMSO, "0")
+dds.f$Time <- relevel(dds.f$Time, "0")
+design(dds.f) <- ~ DMSO + Time + DMSO:Time
+dds.f <- DESeq(dds.f)
+dds.f$dds_ID = "female"
+resultsNames(dds.f)
+
+# [1] "Intercept"     "DMSO_0.1_vs_0" "DMSO_0.2_vs_0" "DMSO_0.4_vs_0" "Time_2_vs_0"   "Time_4_vs_0"  
+# [7] "Time_8_vs_0"   "DMSO0.1.Time2" "DMSO0.2.Time2" "DMSO0.4.Time2" "DMSO0.1.Time4" "DMSO0.2.Time4"
+# [13] "DMSO0.4.Time4" "DMSO0.1.Time8" "DMSO0.2.Time8" "DMSO0.4.Time8"
+
+dds.m <- dds.gse81142[,dds.gse81142$Sex == "M" & dds.gse81142$Sample_Acc != "SRR3477078"] # I removed SRR3477078 because had very low number of reads and clustered separated from the rest of the Male samples.
+dds.m$Sex <- droplevels(dds.m$Sex)
+design(dds.m) <- ~ DMSO + Time + DMSO:Time
+dds.m$DMSO <- relevel(dds.m$DMSO, "0")
+dds.m$Time <- relevel(dds.m$Time, "0")
+dds.m <- DESeq(dds.m)
+dds.m$dds_ID = "male"
+resultsNames(dds.m)
+
+# [1] "Intercept"     "DMSO_0.1_vs_0" "DMSO_0.2_vs_0" "DMSO_0.4_vs_0" "Time_2_vs_0"   "Time_4_vs_0"  
+# [7] "Time_8_vs_0"   "DMSO0.1.Time2" "DMSO0.2.Time2" "DMSO0.4.Time2" "DMSO0.1.Time4" "DMSO0.2.Time4"
+# [13] "DMSO0.4.Time4" "DMSO0.1.Time8" "DMSO0.2.Time8" "DMSO0.4.Time8"
+```
+
+# Perform Sex-specific PCA analysis
+```{r}
+# Normalize counts
+vsd.f <- vst(dds.f, blind=FALSE)
+
+# Keep genes with at least 20 reads total across samples
+keep <- rowSums(as.data.frame(dds.f@assays@data@listData),na.rm = TRUE) >= 20
+vsd.f <- vsd.f[keep,]
+
+# Calculate distances between samples
+sampleDists.f <- dist(t(assay(vsd.f)))
+
+# PCA
+pcaData <- DESeq2::plotPCA(vsd.f, intgroup=c("DMSO","Time"), returnData=TRUE, ntop = 500)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+y.coords = c(min(pcaData$PC1, pcaData$PC2), max(pcaData$PC1, pcaData$PC2))
+x.coords = y.coords
+p1 <- ggplot(pcaData, aes(PC1, PC2, shape=DMSO, color=Time)) +
+  geom_point(size=4) + scale_color_lancet() + 
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed(ratio = (max(pcaData$PC1)-min(pcaData$PC1))/(max(pcaData$PC2)-min(pcaData$PC2))) + labs(title = "Females")
+
+ggsave("Plots/pca_by_female.pdf", plot = p1)
+p1
+
+## MALES ## 
+
+# Normalize counts
+vsd.m <- vst(dds.m, blind=FALSE)
+
+# Keep genes with at least 20 reads total across samples
+keep <- rowSums(as.data.frame(dds.m@assays@data@listData),na.rm = TRUE) >= 20
+vsd.m <- vsd.m[keep,]
+
+# Calculate distances between samples
+sampleDists.m <- dist(t(assay(vsd.m)))
+
+# PCA
+pcaData <- DESeq2::plotPCA(vsd.m, intgroup=c("DMSO","Time"), returnData=TRUE, ntop = 500)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+y.coords = c(min(pcaData$PC1, pcaData$PC2), max(pcaData$PC1, pcaData$PC2))
+x.coords = y.coords
+p2 <- ggplot(pcaData, aes(PC1, PC2, shape=DMSO, color=Time)) +
+  geom_point(size=4) + scale_color_lancet() + 
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed(ratio = (max(pcaData$PC1)-min(pcaData$PC1))/(max(pcaData$PC2)-min(pcaData$PC2))) + labs(title = "Males")
+
+ggsave("Plots/pca_by_male.pdf", plot = p2)
+p2
+```
+
+
+# Run DE analysis
+```{r}
+
+dir.create(path = "./DE", showWarnings = FALSE)
+
+# [1] "Intercept"     "DMSO_0.1_vs_0" "DMSO_0.2_vs_0" "DMSO_0.4_vs_0" "Time_2_vs_0"   "Time_4_vs_0"  
+# [7] "Time_8_vs_0"   "DMSO0.1.Time2" "DMSO0.2.Time2" "DMSO0.4.Time2" "DMSO0.1.Time4" "DMSO0.2.Time4"
+# [13] "DMSO0.4.Time4" "DMSO0.1.Time8" "DMSO0.2.Time8" "DMSO0.4.Time8"
+
+comparisons <- list(
+  c("DMSO_0.1_vs_0"),
+  c("DMSO_0.2_vs_0"),
+  c("DMSO_0.4_vs_0"),
+  c("DMSO_0.1_vs_0","DMSO0.1.Time2"), c("DMSO_0.1_vs_0","DMSO0.1.Time4"), c("DMSO_0.1_vs_0","DMSO0.1.Time8"),
+  c("DMSO_0.2_vs_0","DMSO0.2.Time2"), c("DMSO_0.2_vs_0","DMSO0.2.Time4"), c("DMSO_0.2_vs_0","DMSO0.2.Time8"),
+  c("DMSO_0.4_vs_0","DMSO0.4.Time2"), c("DMSO_0.4_vs_0","DMSO0.4.Time4"), c("DMSO_0.4_vs_0","DMSO0.4.Time8")
+)
+########################################################################################################
+# Make function here to compute DE analysis and output results for each comparison above.
+########################################################################################################
+# Define function for processing and saving result tables
+sort_and_write_res_table <- function(result_table, file_name){
+  dir.create(path = "./DE", showWarnings = FALSE)
+  
+  # Sort genes by (padj)
+  result_table_sorted <- result_table[order(result_table$padj, decreasing = FALSE),]
+  
+  # Add gene symbols
+  symbol_list <- replace_gene_acc_by_symbol_ids(rownames(result_table_sorted), return_all = TRUE, db = org.Dm.eg.db)
+  result_table_sorted$Gene_name <- symbol_list
+  
+  # Write sorted table to file
+  write.table(as.data.frame(result_table_sorted), file = paste0("./DE/",file_name,".txt"), sep = "\t", col.names=NA)
+  
+  return(result_table_sorted)
+}
+
+
+get_deseq_result <- function(dds, contrast, analysis_type = "ashr"){
+  #print(1)
+  if(analysis_type == "ashr"){
+    res <- lfcShrink(dds = dds, contrast =list(contrast), type = analysis_type)
+  } else if (analysis_type == "result"){
+    res <- results(object = dds, contrast = list(contrast), independentFiltering = FALSE)
+  }
+  #print(2)
+  # Replace NAs by 1s
+  res$pvalue[is.na(res$pvalue)] <- 1
+  res$padj[is.na(res$padj)] <- 1
+  #print(3)
+  # Print out summary of results
+  print(contrast)
+  summary(res, alpha = 0.05)
+  #print(4)
+  # Sort result table and save it
+  my_file_name = paste0("DE_",paste0(i, collapse = "_"),"_",dds$dds_ID[1])
+  #print(5)
+  res_sorted <- sort_and_write_res_table(result_table = res, file_name =  my_file_name)
+  #print(6)
+  return(res_sorted)
+  
+}
+
+########################################################################################################
+
+########################################################################################################
+
+
+# Using lfcShrink instead of results to reduce high Log2FC bias of genes with low expression
+DE_results.f = list()
+DE_results.m = list()
+for (i in comparisons){
+  print(i)
+  DE_results.f[[paste0(i, collapse = "_")]] <- get_deseq_result(dds = dds.f, contrast = i, analysis_type = "ashr" )
+  DE_results.m[[paste0(i, collapse = "_")]] <- get_deseq_result(dds = dds.m, contrast = i, analysis_type = "ashr" )
+}  
+
+
+```
+
+# Build summary table across contrats
+```{r}
+N <- length(names(my_results))
+# Initialize table
+my_table <- data.frame(rbind("logFC.up.female" = rep(0, N), 
+                             "logFC.down.female" = rep(0, N),
+                             "logFC.up.male" = rep(0, N), 
+                             "logFC.down.male" = rep(0, N)
+                             )
+                       ) 
+colnames(my_table) <- names(DE_results.f)
+
+for (i in names(DE_results.f)){ 
+  my_table["logFC.up.female",i] <- table(DE_results.f[[i]]$padj <= 0.05 & DE_results.f[[i]]$log2FoldChange > 0)[2]
+  my_table["logFC.down.female",i] <- table(DE_results.f[[i]]$padj <= 0.05 & DE_results.f[[i]]$log2FoldChange < 0)[2]
+  my_table["logFC.up.male",i] <- table(DE_results.m[[i]]$padj <= 0.05 & DE_results.m[[i]]$log2FoldChange > 0)[2]
+  my_table["logFC.down.male",i] <- table(DE_results.m[[i]]$padj <= 0.05 & DE_results.m[[i]]$log2FoldChange < 0)[2]
+}
+
+# Replace NA by 0s
+my_table[is.na(my_table )] <- 0
+write.table(x = my_table, file = "DE_summary.txt", sep = "\t", col.names = NA)
+```
+
+
+```{r}
+sessionInfo()
+```
