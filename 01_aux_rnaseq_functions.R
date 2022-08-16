@@ -1,15 +1,27 @@
 # FUnction to plot normalized gene expression from a dds element. It takes a vector of gene IDs of interest and a prefix file name as input. 
 #It saves the concatenated plots in a single pdf file.
 plot_normalized_gene_expression <- function(my_dds, ensmbl_gene_list, file_prefix){
-  genes_of_interest_symbols <- ensembl_to_symbol$gene_name[ensembl_to_symbol$Ensembl_ID %in% ensmbl_gene_list]
-  pdf(file = paste0("./Plots/",file_prefix,"_vst_gene_expression.pdf"))
+  #genes_of_interest_symbols <- ensembl_to_symbol$gene_name[ensembl_to_symbol$Ensembl_ID %in% ensmbl_gene_list]
+  genes_of_interest_symbols <- replace_gene_acc_by_symbol_ids(ensmbl_gene_list, return_all = TRUE, db = org.Dm.eg.db)
+  
+  ensembl_to_symbol <- as.data.frame(cbind(Ensembl_ID = ensmbl_gene_list, symbol = genes_of_interest_symbols))
+  
+  pdf(file = paste0("./Plots/",file_prefix,"_vsd.pdf"))
   print("Expression of genes of interest")
-  for (my_gene in  genes_of_interest){
-    p <- print_gene_expression(dds.one, 
-                               my_gene, 
-                               ensembl_to_symbol[ensembl_to_symbol$Ensembl_ID == my_gene,2]
-    )
+  for (my_gene in  ensmbl_gene_list){
+    p <- print_gene_expression(dds = my_dds, 
+                               gene_id = my_gene, 
+                               symbol = ensembl_to_symbol[ensembl_to_symbol$Ensembl_ID == my_gene,2]
+      )
     print(p)
+    
+    p.tc <- print_gene_expression_over_timme(ddsTC =  my_dds, 
+                               gene_id = my_gene, 
+                               symbol = ensembl_to_symbol[ensembl_to_symbol$Ensembl_ID == my_gene,2],
+                               title_prefix = file_prefix
+                              )
+    print(p.tc)
+    
   }
   dev.off()
 }
@@ -72,8 +84,8 @@ replace_gene_acc_by_gb_ids <- function(ensemble_ids, return_all = TRUE){
   }
 }
 
-replace_gene_acc_by_symbol_ids <- function(ensemble_ids, return_all = TRUE){
-  entrezids <- mapIds(org.Hs.eg.db, keys = ensemble_ids, column = c('SYMBOL'), keytype = 'ENSEMBL', multiVals = "first")
+replace_gene_acc_by_symbol_ids <- function(ensemble_ids, return_all = TRUE, db = org.Hs.eg.db){
+  entrezids <- mapIds(db, keys = ensemble_ids, column = c('SYMBOL'), keytype = 'ENSEMBL', multiVals = "first")
   entrezids <- entrezids[!is.na(entrezids)]
   to_name <- ensemble_ids %in% names(entrezids)
   ensemble_ids[to_name] <- as.vector(entrezids)
@@ -243,18 +255,35 @@ normalize_by_TPM <- function(counts.df) {
 }
 
 print_gene_expression <- function(dds, gene_id, symbol = "", title_prefix = ""){
-  counts.p <- plotCounts(dds, gene = gene_id, intgroup = c("Inducer", "Genotype"), 
+  counts.p <- plotCounts(dds, gene = gene_id, intgroup = c("DMSO", "Time"), 
                          transform = FALSE, returnData = TRUE)
-  p <- ggerrorplot(counts.p, x = "Inducer", y = "count",
+  
+  # Replace 0s with 0.1s so they are displayed as y=0 in the Log10 scale, otherwise 0s are not displayed
+  #counts.p$count[which(counts.p$count == 0)] <- 0.1
+  
+  p <- ggerrorplot(counts.p, x = "DMSO", y = "count",
                    desc_stat = "mean_sd", 
-                   color = "Inducer",
+                   color = "DMSO",
                    add = "dotplot", 
                    add.params = list(color = "darkgray"), 
-                   facet.by = "Genotype",
+                   facet.by = "Time",
                    title = paste(title_prefix,"Gene",gene_id, symbol), 
-                   ylab = "Normalized counts"
-  )
+                   ylab = "Normalized counts (Log10)" 
+                  ) + scale_y_continuous(labels = comma, oob = squish_infinite, trans = "log10") # Forces not scientific notation
   return(p)
+}
+
+
+print_gene_expression_over_timme <- function(ddsTC, gene_id, symbol = "", title_prefix = ""){
+  
+  fiss <- plotCounts(ddsTC, gene_id, intgroup = c("DMSO", "Time"), returnData = TRUE)
+  fiss$minute <- as.numeric(as.character(fiss$Time))
+  p <- ggplot(fiss,
+         aes(x = Time, y = count, color = DMSO, group = DMSO)) + 
+    geom_point() + stat_summary(fun=mean, geom="line") + labs(title = paste(title_prefix,"Gene",gene_id, symbol)) +
+    scale_y_log10()
+ 
+   return(p)
 }
 
 agnes_volcanoplot <- function(res.tmp, my_file_name, log_scale = FALSE, gene_list, my_comparison = ""){

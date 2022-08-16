@@ -29,6 +29,7 @@ library("RColorBrewer")
 library(pheatmap)
 library(ggsci)
 library(AnnotationDbi)
+library(scales)
 ```
 
 # Load aux functions
@@ -142,27 +143,29 @@ dds.f <- dds.gse81142[, dds.gse81142$Sex == "F"]
 dds.f$Sex <- droplevels(dds.f$Sex)
 dds.f$DMSO <- relevel(dds.f$DMSO, "0")
 dds.f$Time <- relevel(dds.f$Time, "0")
-design(dds.f) <- ~ DMSO + Time + DMSO:Time
+design(dds.f) <- ~ Time + DMSO + Time:DMSO
 dds.f <- DESeq(dds.f)
 dds.f$dds_ID = "female"
 resultsNames(dds.f)
 
-# [1] "Intercept"     "DMSO_0.1_vs_0" "DMSO_0.2_vs_0" "DMSO_0.4_vs_0" "Time_2_vs_0"   "Time_4_vs_0"  
-# [7] "Time_8_vs_0"   "DMSO0.1.Time2" "DMSO0.2.Time2" "DMSO0.4.Time2" "DMSO0.1.Time4" "DMSO0.2.Time4"
-# [13] "DMSO0.4.Time4" "DMSO0.1.Time8" "DMSO0.2.Time8" "DMSO0.4.Time8"
+# [1] "Intercept"     "Time_2_vs_0"   "Time_4_vs_0"   "Time_8_vs_0"   "DMSO_0.1_vs_0" "DMSO_0.2_vs_0"
+# [7] "DMSO_0.4_vs_0" "Time2.DMSO0.1" "Time4.DMSO0.1" "Time8.DMSO0.1" "Time2.DMSO0.2" "Time4.DMSO0.2"
+#c[13] "Time8.DMSO0.2" "Time2.DMSO0.4" "Time4.DMSO0.4" "Time8.DMSO0.4"
 
 dds.m <- dds.gse81142[,dds.gse81142$Sex == "M" & dds.gse81142$Sample_Acc != "SRR3477078"] # I removed SRR3477078 because had very low number of reads and clustered separated from the rest of the Male samples.
 dds.m$Sex <- droplevels(dds.m$Sex)
-design(dds.m) <- ~ DMSO + Time + DMSO:Time
+design(dds.m) <- ~ Time + DMSO + Time:DMSO
 dds.m$DMSO <- relevel(dds.m$DMSO, "0")
 dds.m$Time <- relevel(dds.m$Time, "0")
 dds.m <- DESeq(dds.m)
 dds.m$dds_ID = "male"
 resultsNames(dds.m)
 
-# [1] "Intercept"     "DMSO_0.1_vs_0" "DMSO_0.2_vs_0" "DMSO_0.4_vs_0" "Time_2_vs_0"   "Time_4_vs_0"  
-# [7] "Time_8_vs_0"   "DMSO0.1.Time2" "DMSO0.2.Time2" "DMSO0.4.Time2" "DMSO0.1.Time4" "DMSO0.2.Time4"
-# [13] "DMSO0.4.Time4" "DMSO0.1.Time8" "DMSO0.2.Time8" "DMSO0.4.Time8"
+# [1] "Intercept"     "Time_2_vs_0"   "Time_4_vs_0"   "Time_8_vs_0"   "DMSO_0.1_vs_0" "DMSO_0.2_vs_0"
+# [7] "DMSO_0.4_vs_0" "Time2.DMSO0.1" "Time4.DMSO0.1" "Time8.DMSO0.1" "Time2.DMSO0.2" "Time4.DMSO0.2"
+#c[13] "Time8.DMSO0.2" "Time2.DMSO0.4" "Time4.DMSO0.4" "Time8.DMSO0.4"
+
+
 ```
 
 # Perform Sex-specific PCA analysis
@@ -232,9 +235,9 @@ comparisons <- list(
   c("DMSO_0.1_vs_0"),
   c("DMSO_0.2_vs_0"),
   c("DMSO_0.4_vs_0"),
-  c("DMSO_0.1_vs_0","DMSO0.1.Time2"), c("DMSO_0.1_vs_0","DMSO0.1.Time4"), c("DMSO_0.1_vs_0","DMSO0.1.Time8"),
-  c("DMSO_0.2_vs_0","DMSO0.2.Time2"), c("DMSO_0.2_vs_0","DMSO0.2.Time4"), c("DMSO_0.2_vs_0","DMSO0.2.Time8"),
-  c("DMSO_0.4_vs_0","DMSO0.4.Time2"), c("DMSO_0.4_vs_0","DMSO0.4.Time4"), c("DMSO_0.4_vs_0","DMSO0.4.Time8")
+  c("DMSO_0.1_vs_0","Time2.DMSO0.1"), c("DMSO_0.1_vs_0","Time4.DMSO0.1"), c("DMSO_0.1_vs_0","Time8.DMSO0.1"),
+  c("DMSO_0.2_vs_0","Time2.DMSO0.2"), c("DMSO_0.2_vs_0","Time4.DMSO0.2"), c("DMSO_0.2_vs_0","Time8.DMSO0.2"),
+  c("DMSO_0.4_vs_0","Time2.DMSO0.4"), c("DMSO_0.4_vs_0","Time4.DMSO0.4"), c("DMSO_0.4_vs_0","Time8.DMSO0.4")
 )
 ########################################################################################################
 # Make function here to compute DE analysis and output results for each comparison above.
@@ -259,7 +262,7 @@ sort_and_write_res_table <- function(result_table, file_name){
 
 get_deseq_result <- function(dds, contrast, analysis_type = "ashr"){
   #print(1)
-  if(analysis_type == "ashr"){
+  if(analysis_type %in% c("ashr","apeglm","normal")){
     res <- lfcShrink(dds = dds, contrast =list(contrast), type = analysis_type)
   } else if (analysis_type == "result"){
     res <- results(object = dds, contrast = list(contrast), independentFiltering = FALSE)
@@ -288,13 +291,29 @@ get_deseq_result <- function(dds, contrast, analysis_type = "ashr"){
 
 
 # Using lfcShrink instead of results to reduce high Log2FC bias of genes with low expression
+
 DE_results.f = list()
 DE_results.m = list()
 for (i in comparisons){
   print(i)
-  DE_results.f[[paste0(i, collapse = "_")]] <- get_deseq_result(dds = dds.f, contrast = i, analysis_type = "ashr" )
-  DE_results.m[[paste0(i, collapse = "_")]] <- get_deseq_result(dds = dds.m, contrast = i, analysis_type = "ashr" )
+  id <- paste0(i, collapse = "_")
+  DE_results.f[[id]] <- get_deseq_result(dds = dds.f, contrast = i, analysis_type = "ashr" )
+  DE_results.m[[id]] <- get_deseq_result(dds = dds.m, contrast = i, analysis_type = "ashr" )
+
+  genes_of_interest.f <- head(rownames(DE_results.f[[id]][DE_results.f[[id]]$padj <= 0.05, ]))
+  if (length(genes_of_interest.f) > 0){
+    plot_normalized_gene_expression(my_dds = dds.f, 
+                                  ensmbl_gene_list = genes_of_interest.f, 
+                                  file_prefix = paste0("Gene_exp_",id, "_F_")) 
+  }
+  genes_of_interest.m <- head(rownames(DE_results.m[[id]][DE_results.m[[id]]$padj <= 0.05, ]))
+  if (length(genes_of_interest.m) > 0){
+    plot_normalized_gene_expression(my_dds = dds.m, 
+                                  ensmbl_gene_list = genes_of_interest.m, 
+                                  file_prefix = paste0("Gene_exp_",id, "_M_")) 
+  }
 }  
+
 
 
 ```
@@ -321,6 +340,32 @@ for (i in names(DE_results.f)){
 # Replace NA by 0s
 my_table[is.na(my_table )] <- 0
 write.table(x = my_table, file = "DE_summary.txt", sep = "\t", col.names = NA)
+
+```
+
+
+
+```{r}
+dds.m.t4 <- dds.m[,dds.m$Time == "4"] # I removed SRR3477078 because had very low number of reads and clustered separated from the rest of the Male samples.
+dds.m.t4$Time <- droplevels(dds.m.t4$Time)
+design(dds.m.t4) <- ~ DMSO
+dds.m.t4$DMSO <- relevel(dds.m.t4$DMSO, "0")
+dds.m.t4 <- DESeq(dds.m.t4)
+dds.m.t4$dds_ID = "male_t4"
+resultsNames(dds.m.t4)
+
+i=c("DMSO_0.2_vs_0")
+res.m.t4 <- get_deseq_result(dds = dds.m.t4, contrast = i, analysis_type = "ashr" )
+summary(res.m.t4, alpha = 0.05)
+#res.m.t4 <- results(dds.m.t4, list( i ))
+ix = which.min(res.m.t4$padj) # most significant
+res.m.t4 <- res.m.t4[order(res.m.t4$padj),] # sort
+barplot(assay(dds.m.t4)[ix,],las=2, main=rownames(dds.m.t4)[ ix  ]  )
+
+genes_of_interest <- head(rownames(res.m.t4))
+plot_normalized_gene_expression(my_dds = dds.m.t4, 
+                                ensmbl_gene_list = genes_of_interest, 
+                                file_prefix = "Genes_with_extreme_up_down_expr")
 ```
 
 
