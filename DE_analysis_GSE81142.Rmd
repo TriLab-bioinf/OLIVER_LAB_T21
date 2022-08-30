@@ -21,6 +21,9 @@ knitr::opts_chunk$set(warning = FALSE, message = FALSE, tidy = TRUE)
 
 # Load libraries
 ```{r message=FALSE}
+
+options(java.parameters = "-Xmx8000m")
+
 library(tidyverse)
 library(DESeq2)
 library(cowplot)
@@ -30,6 +33,9 @@ library(pheatmap)
 library(ggsci)
 library(AnnotationDbi)
 library(scales)
+library(org.Dm.eg.db)
+library(xlsx)
+library(r2excel)
 ```
 
 # Load aux functions
@@ -139,7 +145,8 @@ Samples cluster mainly by Sex.
 
 # Separate M and F
 ```{r}
-dds.f <- dds.gse81142[, dds.gse81142$Sex == "F"]
+dds.f <- dds.gse81142[, dds.gse81142$Sex == "F" & dds.gse81142$Sample_Acc != "SRR3477024"] # I removed SRR3477024 because it clusters separated from the rest of the Female samples and very close to Male samples and therefore, it seems a misclassification.
+
 dds.f$Sex <- droplevels(dds.f$Sex)
 dds.f$DMSO <- relevel(dds.f$DMSO, "0")
 dds.f$Time <- relevel(dds.f$Time, "0")
@@ -181,15 +188,15 @@ vsd.f <- vsd.f[keep,]
 sampleDists.f <- dist(t(assay(vsd.f)))
 
 # PCA
-pcaData <- DESeq2::plotPCA(vsd.f, intgroup=c("DMSO","Time"), returnData=TRUE, ntop = 500)
-percentVar <- round(100 * attr(pcaData, "percentVar"))
-y.coords = c(min(pcaData$PC1, pcaData$PC2), max(pcaData$PC1, pcaData$PC2))
+pcaData.f <- DESeq2::plotPCA(vsd.f, intgroup=c("DMSO","Time"), returnData=TRUE, ntop = 500)
+percentVar <- round(100 * attr(pcaData.f, "percentVar"))
+y.coords = c(min(pcaData.f$PC1, pcaData.f$PC2), max(pcaData.f$PC1, pcaData.f$PC2))
 x.coords = y.coords
-p1 <- ggplot(pcaData, aes(PC1, PC2, shape=DMSO, color=Time)) +
+p1 <- ggplot(pcaData.f, aes(PC1, PC2, shape=DMSO, color=Time)) +
   geom_point(size=4) + scale_color_lancet() + 
   xlab(paste0("PC1: ",percentVar[1],"% variance")) +
   ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
-  coord_fixed(ratio = (max(pcaData$PC1)-min(pcaData$PC1))/(max(pcaData$PC2)-min(pcaData$PC2))) + labs(title = "Females")
+  coord_fixed(ratio = (max(pcaData.f$PC1)-min(pcaData.f$PC1))/(max(pcaData.f$PC2)-min(pcaData.f$PC2))) + labs(title = "Females")
 
 ggsave("Plots/pca_by_female.pdf", plot = p1)
 p1
@@ -243,8 +250,23 @@ comparisons <- list(
 # Make function here to compute DE analysis and output results for each comparison above.
 ########################################################################################################
 # Define function for processing and saving result tables
-sort_and_write_res_table <- function(result_table, file_name){
+sort_and_write_res_table <- function(result_table, 
+                                     file_name = "TABLE.xlsx", 
+                                     sheet_name = "sheet_1"){
   dir.create(path = "./DE", showWarnings = FALSE)
+  
+  # add path
+  file_name <- paste0("./DE/",file_name)
+  
+  # Check if an excel spreadsheet already exists, otherwise create one
+  if(file.exists(file_name)){
+    wb <- loadWorkbook(file = file_name)
+  } else {
+    wb <- createWorkbook(type="xlsx")
+  }
+  
+  # Create new excel sheet
+  sheet <- createSheet(wb, sheetName = sheet_name)
   
   # Sort genes by (padj)
   result_table_sorted <- result_table[order(result_table$padj, decreasing = FALSE),]
@@ -252,9 +274,16 @@ sort_and_write_res_table <- function(result_table, file_name){
   # Add gene symbols
   symbol_list <- replace_gene_acc_by_symbol_ids(rownames(result_table_sorted), return_all = TRUE, db = org.Dm.eg.db)
   result_table_sorted$Gene_name <- symbol_list
+  result_table_sorted <- as.data.frame(result_table_sorted) 
+  
+  # Add df to excel sheet
+  xlsx.addTable(wb = wb, sheet = sheet, data = result_table_sorted, startRow = 1, startCol = 1)
+
+  # Write sorted table to Excel file as different worksheets. Need file name + Worksheet name !!!
+  saveWorkbook(wb, file_name)
   
   # Write sorted table to file
-  write.table(as.data.frame(result_table_sorted), file = paste0("./DE/",file_name,".txt"), sep = "\t", col.names=NA)
+  # write.table(as.data.frame(result_table_sorted), file = paste0("./DE/",file_name,".txt"), sep = "\t", col.names=NA)
   
   return(result_table_sorted)
 }
@@ -277,9 +306,14 @@ get_deseq_result <- function(dds, contrast, analysis_type = "ashr"){
   summary(res, alpha = 0.05)
   #print(4)
   # Sort result table and save it
-  my_file_name = paste0("DE_",paste0(i, collapse = "_"),"_",dds$dds_ID[1])
+  my_file_name = paste0("DE_",dds$dds_ID[1])
+  #paste0("DE_",paste0(contrast, collapse = "_"),"_",dds$dds_ID[1])
+  
+  my_sheet = paste0(paste0(contrast, collapse = "_"),"_",dds$dds_ID[1])
   #print(5)
-  res_sorted <- sort_and_write_res_table(result_table = res, file_name =  my_file_name)
+  res_sorted <- sort_and_write_res_table(result_table = res, 
+                                         file_name =  paste0(my_file_name,".xlsx"), 
+                                         sheet_name = my_sheet)
   #print(6)
   return(res_sorted)
   
@@ -297,7 +331,7 @@ DE_results.m = list()
 for (i in comparisons){
   print(i)
   id <- paste0(i, collapse = "_")
-  DE_results.f[[id]] <- get_deseq_result(dds = dds.f, contrast = i, analysis_type = "ashr" )
+  DE_results.f[[id]] <- get_deseq_result(dds = dds.f, contrast =  i, analysis_type = "ashr" )
   DE_results.m[[id]] <- get_deseq_result(dds = dds.m, contrast = i, analysis_type = "ashr" )
 
   genes_of_interest.f <- head(rownames(DE_results.f[[id]][DE_results.f[[id]]$padj <= 0.05, ]))
@@ -344,29 +378,78 @@ write.table(x = my_table, file = "DE_summary.txt", sep = "\t", col.names = NA)
 ```
 
 
-
+# Look for DE gene overlaps among time points and direction of change in gene expression
+# Build summary table across contrats
 ```{r}
-dds.m.t4 <- dds.m[,dds.m$Time == "4"] # I removed SRR3477078 because had very low number of reads and clustered separated from the rest of the Male samples.
-dds.m.t4$Time <- droplevels(dds.m.t4$Time)
-design(dds.m.t4) <- ~ DMSO
-dds.m.t4$DMSO <- relevel(dds.m.t4$DMSO, "0")
-dds.m.t4 <- DESeq(dds.m.t4)
-dds.m.t4$dds_ID = "male_t4"
-resultsNames(dds.m.t4)
 
-i=c("DMSO_0.2_vs_0")
-res.m.t4 <- get_deseq_result(dds = dds.m.t4, contrast = i, analysis_type = "ashr" )
-summary(res.m.t4, alpha = 0.05)
-#res.m.t4 <- results(dds.m.t4, list( i ))
-ix = which.min(res.m.t4$padj) # most significant
-res.m.t4 <- res.m.t4[order(res.m.t4$padj),] # sort
-barplot(assay(dds.m.t4)[ix,],las=2, main=rownames(dds.m.t4)[ ix  ]  )
+get_diff_exp_genes_across_conditions_plot <- function(DE_result_list){
+  # Initialize list 
+  my_overlap_list.f <- list()
+  all_sig_genes <- c()
+  
+  for (i in names(DE_result_list)){
+    genes_up.f <- c(rownames(subset(DE_result_list[[i]], padj <= 0.05 & log2FoldChange > 0.5)))
+    genes_dn.f <- c(rownames(subset(DE_result_list[[i]], padj <= 0.05 & log2FoldChange < -0.5)))
+    #my_overlap_list.f[i] <- c(subset(DE_result_list[[i]], padj <= 0.05 & log2FoldChange > 0)[,"Gene_name"])
+    my_overlap_list.f[[i]] <- unique(c(genes_up.f, genes_dn.f) )
+    #                          subset(DE_result_list[[i]], padj <= 0.05 & log2FoldChange < 0)[,"Gene_name"]
+    #                          )
+    all_sig_genes <- unique(c(all_sig_genes, my_overlap_list.f[[i]]))
+    #my_table_overlap["logFC.up.male",i] <- subset(DE_results.m[[i]], padj <= 0.05 & log2FoldChange > 0)[,"Gene_name"]
+    #my_table_overlap["logFC.down.male",i] <- subset(DE_results.m[[i]], padj <= 0.05 & log2FoldChange < 0)[,"Gene_name"]
+  }
+  
+  row.N <- length(all_sig_genes)
+  col.N <- length(names(DE_result_list))
+  my_tibble <- as_tibble(matrix(nrow = row.N, ncol = col.N + 2))
+  colnames(my_tibble) <- c("gene_ids","gene_names", names(DE_result_list))
+  my_tibble$gene_ids <- all_sig_genes
+  my_tibble$gene_names <- subset(DE_result_list[[i]], rownames(DE_result_list[[i]]) %in%  all_sig_genes)["Gene_name"]
+  
+  # Load tibble (1 => is differentially expressed in contrast X; 0 => is NOT differentially expressed in contrast X)
+  for (my_row in 1:row.N){
+    for (my_col in 1:col.N){
+      my_query <- my_tibble$gene_ids[my_row]
+      my_contrast <- colnames(my_tibble)[my_col]
+      my_tibble[my_row, my_col + 2] <- ifelse(test = my_query %in% my_overlap_list.f[[my_contrast]], 
+                                          yes = subset(DE_result_list[[my_contrast]], rownames(DE_result_list[[my_contrast]]) == my_query)["log2FoldChange"], 
+                                          no = 0)
+    }
+  }
+  
+  my_tibble_long <- pivot_longer(my_tibble, cols = 3:14, names_to = "contrast", values_to = "log2fc")
+  my_tibble_long$log2fc[my_tibble_long$log2fc < -5] <- -5
+  my_tibble_long$log2fc[my_tibble_long$log2fc >  5] <-  5
+  
+  # Plot table
+  p <- my_tibble_long %>% ggplot(aes(x = gene_names$Gene_name, y = contrast, colour = "white", fill = log2fc)) + 
+    theme_pubclean() + 
+    geom_tile( ) +
+    scale_fill_gradient2(low = "red", high = "green", midpoint = 0, mid = "white") + 
+    coord_fixed() + 
+    theme(axis.ticks = element_blank(),
+          panel.grid.minor.x = element_blank(),panel.grid.minor.y = element_blank(),
+          panel.grid.major.x = element_blank(),panel.grid.major.y = element_blank(),
+          axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + 
+    xlab("Differentially expressed genes") + 
+    ylab("Contrasts") + 
+    labs(title = "Log2FC of genes differentially expressed across experimental conditions", 
+         subtitle = "( | Log2FC | > 0.5 and adj.p < 0.05 )")
 
-genes_of_interest <- head(rownames(res.m.t4))
-plot_normalized_gene_expression(my_dds = dds.m.t4, 
-                                ensmbl_gene_list = genes_of_interest, 
-                                file_prefix = "Genes_with_extreme_up_down_expr")
+    return(p)
+}
+
+p.f <- get_diff_exp_genes_across_conditions_plot(DE_result_list = DE_results.f)
+ggsave2(filename = "perturbed_genes_female.pdf", plot = p.f, path = "./Plots", width = 21, height = 8)
+p.f
+
+p.m <- get_diff_exp_genes_across_conditions_plot(DE_result_list = DE_results.m)
+ggsave2(filename = "perturbed_genes_male.pdf", plot = p.m, path = "./Plots", width = 21, height = 8)
+p.m
 ```
+
+
+
 
 
 ```{r}
