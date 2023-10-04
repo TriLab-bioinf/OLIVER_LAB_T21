@@ -1,0 +1,636 @@
+---
+title: "polyA+ RNA expression profiles of Drosophila melanogaster male and female brains after treatment with Sodium salicylate, Chlorpromazine, or Trifluoperazine2HCl."
+author: "Analysis done by Yuejun Wang, TriLab Biounformatic Group"
+output:
+  html_document:
+  pdf_document: default
+  df_print: paged
+gemoetry: margin=1in
+fontsize: 8pt
+fontfamily: mathpazo
+---
+
+\center
+
+# *Summary:*
+
+To explore some of the sex differential responses to drug treatment, we exposed 3 day post-eclosion virgin Drosophila melanogaster (genotype DGRP-900, FlyBase line ID: FBst0028261) to 3 FDA approved drugs and characterized transcript abundance among male and female brains after 24 hours of drug exposure. The 3 tested drugs are water-soluble group N (Nervous system) compounds according to The Anatomical Therapeutic Chemical (ATC) classification system. Two (Chlorpromazine and Trifluoperazine2HCl) are primarily used to treat psychotic disorders, while the third (Sodium salicylate) is used as an analgesic and antipyretic. Following drug treatment, we dissected fly brains, isolated polyA+ RNA and performed high-throughput RNA-Seq analysis. We conducted quantification and statistical analysis of gene expression difference between tested drugs, sexes and their interaction.
+
+```{r setndefinedup, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, tidy = TRUE)
+```
+
+# Load libraries
+
+```{r message=FALSE}
+
+options(java.parameters = "-Xmx8000m")
+
+library(tidyverse)
+library(DESeq2)
+library(cowplot)
+library(ggpubr)
+library("RColorBrewer")
+library(pheatmap)
+library(ggsci)
+library(AnnotationDbi)
+library(scales)
+library(org.Dm.eg.db)
+library(xlsx)
+library(r2excel)
+library(RSkittleBrewer)
+library(genefilter)
+library(RUVSeq)
+library(edgeR)
+library(sva)
+library(ffpe)
+library(corrplot)
+library(limma)
+library(reshape2)
+library(ComplexHeatmap)
+library(circlize)
+trop = RSkittleBrewer('tropical')
+```
+
+# Load aux functions
+
+```{r}
+source(file = "../01_aux_rnaseq_functions.R")
+```
+
+# Load data
+
+```{r message=FALSE}
+setwd("/data/wangy80/TK21/OLIVER_LAB_T21/GSE81161_RNAseq")
+metadata <- as.data.frame(read_delim(file = "../../data/GSE81161.final.info", col_names = FALSE, comment = "#"))
+names(metadata) <- c("GSM","SRR","Sex","Condition","Replicate","SampleName","pool")
+
+rownames(metadata) <- metadata$SampleName
+
+read_counts <- as.data.frame(read_delim(file = "../../data/read_counts", col_names = TRUE, comment = "#"))
+rownames(read_counts) <- read_counts$Geneid # adding gene ids as row names
+
+# Rename sample names
+read_counts <- read_counts[,7:length(read_counts)]
+
+
+
+colnames(read_counts) <- gsub(".sorted.dedup.bam","",
+                              gsub("results/04dedup/","",
+                                   colnames(read_counts)))
+
+# Sort tables so metadata and read counts match order
+
+read_counts <- read_counts[,match(metadata$SRR, colnames(read_counts))]
+
+# Round read counts to the closest interger
+read_counts <- round(read_counts, digits = 0)
+
+# include total read counts in metadata
+metadata$read_counts <- colSums(read_counts)
+
+# Rename column names in read_counts based on metadata
+colnames(read_counts) <- rownames(metadata)
+
+write.table(x = metadata, file = "metadata.txt", sep = "\t")
+
+# Plot total reads per sample using barchar
+dir.create(path = "./Plots", showWarnings = FALSE)
+
+p <- ggbarplot(data = metadata, 
+          x = "SampleName", 
+          y = "read_counts",
+          x.text.angle = 90,
+          fill = "Condition", 
+          title = "Total read counts per sample", 
+          ylab = "Read counts",
+          sort.by.groups = TRUE,
+          palette = "jco",
+          sort.val = "asc")
+
+ggsave2("./Plots/barplot_read_counts_per_sample.pdf", plot = p,width=12,height=8)
+
+p
+
+```
+
+## combat batch corrections on replicates because replicates were performed on different days
+
+
+```{r}
+batch <- metadata$Replicate %>% as.factor() %>% as.numeric()
+# Condition
+Condition <- metadata$Condition %>% as.factor() %>% as.numeric()
+
+# Sex
+Sex <- metadata$Sex %>% as.factor() %>% as.numeric()
+covar_mat <- cbind(Condition, Sex)
+
+#covar_mat <- as.matrix(Sex)
+
+adjusted <- ComBat_seq(as.matrix(read_counts), batch=metadata$Replicate,group=NULL,covar_mod = covar_mat)
+adjusted_counts <- as.data.frame(adjusted)
+```
+
+# DE analysis with DESeq2
+
+
+```{r}
+
+# Converting Time, DMSO and Replicate number to factors
+metadata$Sex <- as.factor(metadata$Sex)
+metadata$Condition <- as.factor(metadata$Condition)
+metadata$Replicate <- as.factor(metadata$Replicate)
+metadata$pool <- as.factor(metadata$pool)
+
+# Adding read_depth in design to control for read_depth
+dds.gse81161 <- DESeqDataSetFromMatrix(countData = adjusted_counts, 
+                              colData = metadata,  
+                              design = ~ Condition + Sex)
+```
+
+
+```{r message=FALSE}
+# Normalize counts
+vsd.gse81161 <- vst(dds.gse81161, blind=FALSE)
+
+write.table(as.data.frame(dds.gse81161@assays@data@listData),"DESeq2_normalized.txt",sep="\t",quote=F)
+
+# Keep genes with at least 20 reads total across samples
+keep <- rowSums(as.data.frame(dds.gse81161@assays@data@listData)) >= 30
+vsd.gse81161 <- vsd.gse81161[keep,]
+
+# Calculate distances between samples
+sampleDists <- dist(t(assay(vsd.gse81161)))
+
+# Plot inter-sample distances
+old.par <- par(no.readonly=T)
+
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vsd.gse81161$SampleName)
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+p.hm <- pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col = colorRampPalette(c("red", "white", "blue"))(100))
+
+pdf("./Plots/heat_map.pdf", p.hm,width=12,height=10)
+p.hm
+dev.off()
+p.hm
+
+```
+
+
+sample female_Chl_rep2, female_Chl_rep3, male_T2HCl_rep6 and female_T2HCl_rep3 are clustered apart from other samples, we consider these samples as outliers
+
+
+```{r message=FALSE}
+pcaData <- DESeq2::plotPCA(vsd.gse81161, intgroup=c("Condition","Sex"), returnData=TRUE, ntop = 500)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+y.coords = c(min(pcaData$PC1, pcaData$PC2), max(pcaData$PC1, pcaData$PC2))
+x.coords = y.coords
+p1 <- ggplot(pcaData, aes(PC1, PC2, color=Condition,shape=Sex)) +
+  geom_point(size=4) + scale_color_lancet() + 
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed(ratio = (max(pcaData$PC1)-min(pcaData$PC1))/(max(pcaData$PC2)-min(pcaData$PC2)))
+
+ggsave("Plots/PCA.pdf", plot = p1)
+p1
+```
+
+Samples slightly clustered by sex (PC2)
+
+## remove outliers
+remove female_Chl_rep2(SRR3478187), female_Chl_rep3(SRR3478188) and male_T2HCl_rep6(SRR3478233) female_T2HCl_rep3(SRR3478206)
+
+```{r}
+names(read_counts)
+
+read_counts <- read_counts %>%
+  dplyr::select(-c('female_Chl_rep2','female_Chl_rep3','male_T2HCl_rep6','female_T2HCl_rep3'))
+
+metadata <- metadata[which(metadata$SampleName!="female_Chl_rep2" & metadata$SampleName!="female_Chl_rep3" & metadata$SampleName!="male_T2HCl_rep6" & metadata$SampleName!="female_T2HCl_rep3"),]
+```
+
+## combat batch effects correction
+
+```{r}
+batch <- metadata$Replicate %>% as.factor() %>% as.numeric()
+# Condition
+Condition <- metadata$Condition %>% as.factor() %>% as.numeric()
+
+# Sex
+Sex <- metadata$Sex %>% as.factor() %>% as.numeric()
+covar_mat <- cbind(Condition, Sex)
+
+#covar_mat <- as.matrix(Sex)
+
+adjusted <- ComBat_seq(as.matrix(read_counts), batch=metadata$Replicate,group=NULL,covar_mod = covar_mat)
+adjusted_counts <- as.data.frame(adjusted)
+```
+
+## DE analysis with DESeq2
+
+
+```{r}
+# Adding read_depth in design to control for read_depth
+dds.gse81161 <- DESeqDataSetFromMatrix(countData = adjusted_counts, 
+                              colData = metadata,  
+                              design = ~ Condition + Sex)
+
+# Normalize counts
+vsd.gse81161 <- vst(dds.gse81161, blind=FALSE)
+
+# Keep genes with at least 20 reads total across samples
+keep <- rowSums(as.data.frame(dds.gse81161@assays@data@listData)) >= 30
+vsd.gse81161 <- vsd.gse81161[keep,]
+
+```
+
+```{r message=FALSE}
+pcaData <- DESeq2::plotPCA(vsd.gse81161, intgroup=c("Condition","Sex"), returnData=TRUE, ntop = 500)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+y.coords = c(min(pcaData$PC1, pcaData$PC2), max(pcaData$PC1, pcaData$PC2))
+x.coords = y.coords
+p1 <- ggplot(pcaData, aes(PC1, PC2, color=Condition,shape=Sex)) +
+  geom_point(size=4) + scale_color_lancet() + 
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed(ratio = (max(pcaData$PC1)-min(pcaData$PC1))/(max(pcaData$PC2)-min(pcaData$PC2)))
+
+ggsave("Plots/pca_remove_outliers.pdf", plot = p1)
+p1
+
+```
+
+After removing outliers, the remaining samples are mainly clustered by sex
+
+## Separate M and F
+
+``` {r}
+
+# female
+dds.f <- dds.gse81161[, dds.gse81161$Sex == "female"] 
+dds.f$Sex <- droplevels(dds.f$Sex)
+dds.f$Condition <- relevel(dds.f$Condition, "Control")
+
+design(dds.f) <- ~Condition
+dds.f <- DESeq(dds.f)
+dds.f$dds_ID = "F"
+resultsNames(dds.f)
+
+# male
+dds.m <- dds.gse81161[,dds.gse81161$Sex == "male"]
+dds.m$Sex <- droplevels(dds.m$Sex)
+design(dds.m) <- ~ Condition
+dds.m$Condition <- relevel(dds.m$Condition, "Control")
+
+design(dds.m) <- ~ Condition
+dds.m <- DESeq(dds.m)
+dds.m$dds_ID = "M"
+resultsNames(dds.m)
+
+```
+
+# Perform Sex-specific PCA analysis
+
+```{r message=FALSE}
+
+## Females ##
+# Normalize counts
+vsd.f <- vst(dds.f, blind=FALSE)
+
+# Keep genes with at least 20 reads total across samples
+keep <- rowSums(as.data.frame(dds.f@assays@data@listData),na.rm = TRUE) >= 20
+vsd.f <- vsd.f[keep,]
+
+# Calculate distances between samples
+sampleDists.f <- dist(t(assay(vsd.f)))
+
+# PCA
+pcaData.f <- DESeq2::plotPCA(vsd.f, intgroup=c("Condition"), returnData=TRUE, ntop = 500)
+percentVar <- round(100 * attr(pcaData.f, "percentVar"))
+y.coords = c(min(pcaData.f$PC1, pcaData.f$PC2), max(pcaData.f$PC1, pcaData.f$PC2))
+x.coords = y.coords
+p1 <- ggplot(pcaData.f, aes(PC1, PC2, color=Condition)) +
+  geom_point(size=4) + scale_color_lancet() + 
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed(ratio = (max(pcaData.f$PC1)-min(pcaData.f$PC1))/(max(pcaData.f$PC2)-min(pcaData.f$PC2))) + labs(title = "Females")
+
+ggsave("Plots/pca_by_female.pdf", plot = p1)
+p1
+
+## MALES ## 
+
+# Normalize counts
+vsd.m <- vst(dds.m, blind=FALSE)
+
+# Keep genes with at least 20 reads total across samples
+keep <- rowSums(as.data.frame(dds.m@assays@data@listData),na.rm = TRUE) >= 20
+vsd.m <- vsd.m[keep,]
+
+# Calculate distances between samples
+sampleDists.m <- dist(t(assay(vsd.m)))
+
+# PCA
+pcaData <- DESeq2::plotPCA(vsd.m, intgroup=c("Condition"), returnData=TRUE, ntop = 500)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+y.coords = c(min(pcaData$PC1, pcaData$PC2), max(pcaData$PC1, pcaData$PC2))
+x.coords = y.coords
+p2 <- ggplot(pcaData, aes(PC1, PC2, color=Condition)) +
+  geom_point(size=4) + scale_color_lancet() + 
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed(ratio = (max(pcaData$PC1)-min(pcaData$PC1))/(max(pcaData$PC2)-min(pcaData$PC2))) + labs(title = "Males")
+
+ggsave("Plots/pca_by_male.pdf", plot = p2)
+p2
+```
+
+# Run DE analysis
+
+```{r}
+dir.create(path = "./DE", showWarnings = FALSE)
+
+comparisons <- list(
+  c("Condition_Chl_vs_Control"),
+  c("Condition_T2HCl_vs_Control"),
+  c("Condition_SS_vs_Control")
+)
+########################################################################################################
+# Make function here to compute DE analysis and output results for each comparison above.
+########################################################################################################
+# Define function for processing and saving result tables
+sort_and_write_res_table <- function(result_table, 
+                                     file_name = "TABLE.xlsx", 
+                                     sheet_name = "sheet_1"){
+  dir.create(path = "./DE", showWarnings = FALSE)
+  
+  # add path
+  file_name <- paste0("./DE/",file_name)
+  
+  # Check if an excel spreadsheet already exists, otherwise create one
+  if(file.exists(file_name)){
+    wb <- loadWorkbook(file = file_name)
+  } else {
+    wb <- createWorkbook(type="xlsx")
+  }
+  
+  # Create new excel sheet, remove sheets if it already exits (if the sheet name is too long, the errors might occur)
+  sheets <- getSheets(wb)
+  if(is.element(sheet_name,names(sheets))){
+    removeSheet(wb, sheetName=sheet_name)
+  }
+  sheet <- createSheet(wb, sheetName = sheet_name)
+
+  # Sort genes by (padj)
+  result_table_sorted <- result_table[order(result_table$padj, decreasing = FALSE),]
+  
+  # Add gene symbols
+  symbol_list <- replace_gene_acc_by_symbol_ids(rownames(result_table_sorted), return_all = TRUE, db = org.Dm.eg.db)
+  result_table_sorted$Gene_name <- symbol_list
+  result_table_sorted <- as.data.frame(result_table_sorted) 
+  
+  # Add df to excel sheet
+  xlsx.addTable(wb = wb, sheet = sheet, data = result_table_sorted, startRow = 1, startCol = 1)
+
+  # Write sorted table to Excel file as different worksheets. Need file name + Worksheet name !!!
+  saveWorkbook(wb, file_name)
+  
+  # Write sorted table to file
+  # write.table(as.data.frame(result_table_sorted), file = paste0("./DE/",file_name,".txt"), sep = "\t", col.names=NA)
+  
+  return(result_table_sorted)
+}
+
+
+get_deseq_result <- function(dds, contrast, analysis_type = "ashr"){
+  #print(1)
+  if(analysis_type %in% c("ashr","apeglm","normal")){
+    res <- lfcShrink(dds = dds, contrast =list(contrast), type = analysis_type)
+  } else if (analysis_type == "result"){
+    res <- results(object = dds, contrast = list(contrast), independentFiltering = FALSE)
+  }
+  #print(2)
+  # Replace NAs by 1s
+  res$pvalue[is.na(res$pvalue)] <- 1
+  res$padj[is.na(res$padj)] <- 1
+  #print(3)
+  # Print out summary of results
+  print(contrast)
+  summary(res, alpha = 0.05)
+  #print(4)
+  # Sort result table and save it
+  my_file_name = paste0("DE_",dds$dds_ID[1])
+  #paste0("DE_",paste0(contrast, collapse = "_"),"_",dds$dds_ID[1])
+  
+  my_sheet = paste0(paste0(contrast, collapse = "_"),"_",dds$dds_ID[1])
+  #print(5)
+  res_sorted <- sort_and_write_res_table(result_table = res, 
+                                         file_name =  paste0(my_file_name,".xlsx"), 
+                                         sheet_name = my_sheet)
+  #print(6)
+  return(res_sorted)
+  
+}
+
+########################################################################################################
+
+########################################################################################################
+```
+
+```{r}
+# Using lfcShrink instead of results to reduce high Log2FC bias of genes with low expression
+
+DE_results.f = list()
+DE_results.m = list()
+for (i in comparisons){
+  print(i)
+  id <- paste0(i, collapse = "_")
+  DE_results.f[[id]] <- get_deseq_result(dds = dds.f, contrast =  i, analysis_type = "ashr" )
+  DE_results.m[[id]] <- get_deseq_result(dds = dds.m, contrast = i, analysis_type = "ashr" )
+
+  genes_of_interest.f <- head(rownames(DE_results.f[[id]][DE_results.f[[id]]$padj <= 0.05, ]))
+  if (length(genes_of_interest.f) > 0){
+    plot_normalized_gene_expression(my_dds = dds.f, 
+                                  ensmbl_gene_list = genes_of_interest.f, 
+                                  file_prefix = paste0("Gene_exp_",id, "_F_")) 
+  }
+  genes_of_interest.m <- head(rownames(DE_results.m[[id]][DE_results.m[[id]]$padj <= 0.05, ]))
+  if (length(genes_of_interest.m) > 0){
+    plot_normalized_gene_expression(my_dds = dds.m, 
+                                  ensmbl_gene_list = genes_of_interest.m, 
+                                  file_prefix = paste0("Gene_exp_",id, "_M_")) 
+  }
+}  
+
+```
+
+# Build summary table across contrats
+
+```{r}
+#N <- length(names(my_results))
+N=3
+# Initialize table
+my_table <- data.frame(rbind("logFC.up.female" = rep(0, N), 
+                             "logFC.down.female" = rep(0, N),
+                             "logFC.up.male" = rep(0, N), 
+                             "logFC.down.male" = rep(0, N)
+                             )
+                       ) 
+colnames(my_table) <- names(DE_results.f)
+
+for (i in names(DE_results.f)){ 
+  my_table["logFC.up.female",i] <- table(DE_results.f[[i]]$padj <= 0.05 & DE_results.f[[i]]$log2FoldChange > 0)[2]
+  my_table["logFC.down.female",i] <- table(DE_results.f[[i]]$padj <= 0.05 & DE_results.f[[i]]$log2FoldChange < 0)[2]
+  my_table["logFC.up.male",i] <- table(DE_results.m[[i]]$padj <= 0.05 & DE_results.m[[i]]$log2FoldChange > 0)[2]
+  my_table["logFC.down.male",i] <- table(DE_results.m[[i]]$padj <= 0.05 & DE_results.m[[i]]$log2FoldChange < 0)[2]
+}
+
+names(DE_results.f) <- paste0("female_",names(DE_results.f))
+names(DE_results.m) <- paste0("male_",names(DE_results.m))
+
+
+# Replace NA by 0s
+my_table[is.na(my_table )] <- 0
+write.table(x = my_table, file = "DE_summary.txt", sep = "\t", col.names = NA)
+
+```
+
+# Look for DE gene overlaps among time points and direction of change in gene expression
+
+
+```{r message=FALSE}
+
+get_diff_exp_genes_across_conditions_plot <- function(DE_result_list){
+  # Initialize list 
+  my_overlap_list.f <- list()
+  all_sig_genes <- c()
+  
+  for (i in names(DE_result_list)){
+    genes_up.f <- c(rownames(subset(DE_result_list[[i]], padj <= 0.05 & log2FoldChange > 0.5)))
+    genes_dn.f <- c(rownames(subset(DE_result_list[[i]], padj <= 0.05 & log2FoldChange < -0.5)))
+    #my_overlap_list.f[i] <- c(subset(DE_result_list[[i]], padj <= 0.05 & log2FoldChange > 0)[,"Gene_name"])
+    my_overlap_list.f[[i]] <- unique(c(genes_up.f, genes_dn.f) )
+    #                          subset(DE_result_list[[i]], padj <= 0.05 & log2FoldChange < 0)[,"Gene_name"]
+    #                          )
+    all_sig_genes <- unique(c(all_sig_genes, my_overlap_list.f[[i]]))
+    #my_table_overlap["logFC.up.male",i] <- subset(DE_results.m[[i]], padj <= 0.05 & log2FoldChange > 0)[,"Gene_name"]
+    #my_table_overlap["logFC.down.male",i] <- subset(DE_results.m[[i]], padj <= 0.05 & log2FoldChange < 0)[,"Gene_name"]
+  }
+  
+  row.N <- length(all_sig_genes)
+  col.N <- length(names(DE_result_list))
+  my_tibble <- as_tibble(matrix(nrow = row.N, ncol = col.N + 2))
+  colnames(my_tibble) <- c("gene_ids","gene_names", names(DE_result_list))
+  my_tibble$gene_ids <- all_sig_genes
+  #my_tibble$gene_names <- subset(DE_result_list[[i]], rownames(DE_result_list[[i]]) %in% all_sig_genes)["Gene_name"]
+  
+  my_tibble$gene_names <- DE_result_list[[i]] %>%
+    filter(rownames(DE_result_list[[i]]) %in% all_sig_genes) %>%
+    dplyr::select(Gene_name) %>%
+    arrange(match(rownames(.),all_sig_genes))
+
+  
+  # Load tibble (1 => is differentially expressed in contrast X; 0 => is NOT differentially expressed in contrast X)
+  for (my_row in 1:row.N){
+    for (my_col in 1:col.N){
+      my_query <- my_tibble$gene_ids[my_row]
+      my_contrast <- colnames(my_tibble)[my_col + 2]
+      my_tibble[my_row, my_col + 2] <- ifelse(test = my_query %in% my_overlap_list.f[[my_contrast]], 
+                                          yes = subset(DE_result_list[[my_contrast]], rownames(DE_result_list[[my_contrast]]) == my_query)["log2FoldChange"], 
+                                          no = 0)
+    }
+  }
+  
+  my_tibble_long <- pivot_longer(my_tibble, cols = 3:ncol(my_tibble), names_to = "contrast", values_to = "log2fc")
+  my_tibble_long$log2fc[my_tibble_long$log2fc < -5] <- -5
+  my_tibble_long$log2fc[my_tibble_long$log2fc >  5] <-  5
+  
+  # Plot table
+  p <- my_tibble_long %>% ggplot(aes(x = gene_names$Gene_name, y = contrast, colour = "white", fill = log2fc)) + 
+    theme_pubclean() + 
+    geom_tile( ) +
+    scale_fill_gradient2(low = "green", high = "red", midpoint = 0, mid = "white") + 
+    coord_fixed() + 
+    theme(axis.ticks = element_blank(),
+          panel.grid.minor.x = element_blank(),panel.grid.minor.y = element_blank(),
+          panel.grid.major.x = element_blank(),panel.grid.major.y = element_blank(),
+          axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + 
+    xlab("Differentially expressed genes") + 
+    ylab("Contrasts") + 
+    labs(title = "Log2FC of genes differentially expressed across experimental conditions", 
+         subtitle = "( | Log2FC | > 0.5 and adj.p < 0.05 )")
+
+    return(p)
+}
+
+
+lists <- c(DE_results.f,DE_results.m)
+
+p <- get_diff_exp_genes_across_conditions_plot(DE_result_list = lists)
+ggsave(filename = "perturbed_genes.pdf", plot = p, path = "./Plots", width = 30, height = 15)
+p
+
+p.f <- get_diff_exp_genes_across_conditions_plot(DE_result_list = DE_results.f)
+ggsave(filename = "perturbed_genes_female.pdf", plot = p.f, path = "./Plots", width = 30, height = 10)
+p.f
+
+p.m <- get_diff_exp_genes_across_conditions_plot(DE_result_list = DE_results.m)
+ggsave(filename = "perturbed_genes_male.pdf", plot = p.m, path = "./Plots", width = 20, height = 10)
+p.m
+```
+
+## heatmap for all comparisons on all significant genes detected in at least one comparisons
+
+```{r message=FALSE, out.width="100%",out.height="100%"}
+
+lists<-lapply(lists, function(x) 
+  cbind(x, gene_ids = rownames(x)))
+
+filter <- function(df) {
+  df[df$padj<=0.05,]
+}
+
+# Apply the filter function to each data frame in the list
+filtered <- lapply(lists, filter)
+
+# Merge the filtered data frames into a single data frame
+all_sig_genes <- unique((bind_rows(filtered))$gene_ids)
+
+# Merge data frames by gene_ids
+merged_df <- bind_rows(lists, .id = "comparisons")
+
+filtered_df <- merged_df[merged_df$gene_ids %in% all_sig_genes, ]
+
+filtered_df_wide <- pivot_wider(filtered_df[,c(1,3,7,8)],  names_from = "comparisons", values_from = "log2FoldChange")
+
+
+# heatmap
+# female_Condition_SS_vs_Control do not show any differenial expressed genes, so remove this comparison
+
+mat <- as.matrix(filtered_df_wide[,c(3:4,6:ncol(filtered_df_wide))])
+rownames(mat) <- filtered_df_wide$gene_ids
+
+p <- Heatmap(mat, 
+        name="log2FoldChange",
+        show_row_names = FALSE,
+        col = colorRamp2(c(-1, 0, 1), c("blue", "white", "red")),
+        column_names_gp = gpar(fontsize =8),
+        heatmap_height = unit(11, "cm"), 
+        heatmap_width = unit(8, "cm"))
+
+pdf("./Plots/pheatmap_DE.pdf",p,height=12,width=8)
+p
+dev.off()
+p
+
+```
+
+```{r}
+sessionInfo()
+```
